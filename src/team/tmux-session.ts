@@ -638,6 +638,19 @@ function paneHasTrustPrompt(captured: string): boolean {
   return hasQuestion && hasChoices;
 }
 
+/**
+ * Detect the bypass-permissions confirmation dialog.
+ * This dialog shows "No, exit" / "Yes, I accept" and blocks worker startup.
+ * Auto-dismiss by pressing Down + Enter to select "Yes, I accept".
+ */
+function paneHasBypassPermissionsPrompt(captured: string): boolean {
+  const lines = captured.split('\n').map(l => l.replace(/\r/g, '').trim()).filter(l => l.length > 0);
+  const tail = lines.slice(-15);
+  const hasWarning = tail.some(l => /Bypass Permissions mode/i.test(l));
+  const hasNoExit = tail.some(l => /No,\s*exit/i.test(l));
+  return hasWarning && hasNoExit;
+}
+
 function paneIsBootstrapping(captured: string): boolean {
   const lines = captured
     .split('\n')
@@ -697,6 +710,18 @@ export async function waitForPaneReady(
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const captured = await capturePaneAsync(paneId, promisifiedExecFile as never);
+
+    // Auto-accept bypass-permissions dialog if it appears during startup
+    if (paneHasBypassPermissionsPrompt(captured)) {
+      try {
+        await promisifiedExecFile('tmux', ['send-keys', '-t', paneId, 'Down']);
+        await sleep(100);
+        await promisifiedExecFile('tmux', ['send-keys', '-t', paneId, 'Enter']);
+        await sleep(500);
+      } catch { /* best effort */ }
+      continue;
+    }
+
     if (paneLooksReady(captured) && !paneHasActiveTask(captured)) {
       return true;
     }
@@ -783,6 +808,14 @@ export async function sendToWorker(
       await sleep(120);
       await sendKey('C-m');
       await sleep(200);
+    }
+
+    // Check for bypass-permissions dialog and auto-accept (press Down then Enter)
+    if (paneHasBypassPermissionsPrompt(initialCapture)) {
+      await sendKey('Down');
+      await sleep(100);
+      await sendKey('C-m');
+      await sleep(500);
     }
 
     // Send text in literal mode with -- separator
